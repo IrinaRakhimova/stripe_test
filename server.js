@@ -1,46 +1,71 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const path = require('path');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-
+require("dotenv").config();
+const express = require("express");
+const path = require("path");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const app = express();
-app.use(cors());
+
+app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
 
-let paymentIntentId = null;
+let storedPayment = null;
 
-app.get('/config', (req, res) => {
-  res.json({ publicKey: process.env.STRIPE_PUBLIC_KEY });
-});
+app.post("/create-payment-intent", async (req, res) => {
+  const { amount, startTime, participants } = req.body;
 
-app.post('/create-payment-intent', async (req, res) => {
   try {
-    const { amount } = req.body;
     const paymentIntent = await stripe.paymentIntents.create({
       amount,
-      currency: 'usd',
-      payment_method_types: ['card'],
-      capture_method: 'manual',
+      currency: "usd",
+      capture_method: "manual",
     });
-    paymentIntentId = paymentIntent.id;
+
+    storedPayment = {
+      id: paymentIntent.id,
+      amount,
+      startTime: new Date(startTime),
+      participants,
+    };
+
+    scheduleCapture(storedPayment);
+
     res.send({ clientSecret: paymentIntent.client_secret });
-  } catch (error) {
-    res.status(500).send({ error: error.message });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/capture-payment-intent', async (req, res) => {
+const scheduleCapture = ({ id, amount, startTime, participants }) => {
+  const delay = startTime.getTime() + 60_000 - Date.now();
+
+  if (delay <= 0) {
+    console.log("Too late. Capturing now.");
+    return capturePayment(id, amount, participants);
+  }
+
+  console.log(`Scheduling capture in ${Math.round(delay / 1000)}s`);
+
+  setTimeout(() => {
+    capturePayment(id, amount, participants);
+  }, delay);
+};
+
+const capturePayment = async (paymentIntentId, amount, participants) => {
+  if (!paymentIntentId) {
+    console.log("No payment intent to capture.");
+    return;
+  }
+
+  const finalAmount = Math.floor(amount / participants);
+
   try {
-    const { amountToCapture } = req.body;
-    const intent = await stripe.paymentIntents.capture(paymentIntentId, {
-      amount_to_capture: amountToCapture,
+    await stripe.paymentIntents.capture(paymentIntentId, {
+      amount_to_capture: finalAmount,
     });
-    res.send({ success: true, capturedAmount: intent.amount_received });
-  } catch (error) {
-    res.status(500).send({ error: error.message });
+    console.log(`Captured $${(finalAmount / 100).toFixed(2)} from test card.`);
+  } catch (err) {
+    console.error("Capture failed:", err.message);
   }
-});
+};
 
-app.listen(4242, () => console.log('Server running on port 4242'));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
